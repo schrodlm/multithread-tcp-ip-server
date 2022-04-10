@@ -38,12 +38,17 @@ struct responses
     const char* SERVER_PICK_UP = "105 GET MESSAGE";
     const char* SERVER_LOGOUT = "106 LOGOUT";
     const char* SERVER_KEY_REQUEST = "107 KEY REQUEST\a\b";
+    const char* SERVER_OK = "200 OK\a\b";
+    const char* SERVER_LOGIN_FAILED = "300 LOGIN FAILED\a\b";
+    const char* SERVER_SYNTAX_ERROR = "301 SYNTAX ERROR\a\b";
+    const char* SERVER_LOGIC_ERROR = "302 LOGIC ERROR\a\b";
+    const char* SERVER_KEY_OUT_OF_RANGE_ERROR = "303 KEY OUT OF RANGE\a\b";
 };
 
 struct client
 {
     string CLIENT_USERNAME;
-    string CLIENT_KEY_ID;
+    int CLIENT_KEY_ID;
     string CLIENT_INFORMATION;
     string CLIENT_OK;
     string CLIENT_RECHARGING;
@@ -51,15 +56,46 @@ struct client
     string CLIENT_MESSAGE;
 };
 
-bool send_funct(int& socket,const char* response)
+void send_message(int& socket,const char* response)
 {
     if (send(socket, response, strlen(response), MSG_NOSIGNAL) < 0)
     {
         perror("Unable to send data - locally detected error");
         close(socket);
-        return SEND_ERROR;
+        exit(SEND_ERROR);
     }
+}
+
+//==============================================
+/**
+ * @brief Checks if received message had the right ending chars
+ * 
+ * @return true 
+ * @return false 
+ */
+bool endingCharCheck(const char checkBuffer[8000], int BytesRead)
+{
+    if (checkBuffer[BytesRead - 2] != '\a' || checkBuffer[BytesRead - 1] != '\b')
+        {
+            //TODO
+            cout << "Chyba" << endl;
+            return false;
+            
+        }
     return true;
+}
+//===============================================
+pair<int,int> keyCheck( const int client_id, const vector<pair<int,int>>& key,responses& responses, int& fd_sock){
+        if(client_id < 0 || client_id > 4) 
+        {
+            send_message(fd_sock,responses.SERVER_KEY_OUT_OF_RANGE_ERROR);
+            close(fd_sock);
+            exit(1);
+        }
+            
+
+            pair<int,int> key_pair = key[client_id];
+            return key_pair;
 }
 //===============================================
 bool authentization(int &fd_sock)
@@ -72,24 +108,59 @@ bool authentization(int &fd_sock)
     //  second - client key
     vector<pair<int, int>> key = {{23019, 32037}, {32037, 2925}, {18789, 13603}, {16443, 29533}, {18189, 21952}};
 
-    while (1)
-    {
+
         int BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
 
-        if (recv_buffer[BytesRead - 2] != '\a' || recv_buffer[BytesRead - 1] != '\b')
-        {
-            cout << "Chyba" << endl;
-            return false;
-            exit(1);
-        }
+        endingCharCheck(recv_buffer, BytesRead);
+        
         recv_buffer[BytesRead - 2] = '\0';
         client.CLIENT_USERNAME = recv_buffer;
 
-        send_funct(fd_sock, responses.SERVER_KEY_REQUEST);
+        //sending KEY_REQUEST
+        send_message(fd_sock, responses.SERVER_KEY_REQUEST);
+        BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+        
+        endingCharCheck(recv_buffer, BytesRead);
+        recv_buffer[BytesRead - 2] = '\0';
+        client.CLIENT_KEY_ID = atoi(recv_buffer);
 
-            return true;
-    }
-    return true;
+        cout << client.CLIENT_KEY_ID;
+
+
+        //checks if key send by client is legit
+        pair<int,int> key_pair = keyCheck(client.CLIENT_KEY_ID, key, responses, fd_sock);
+
+
+        //vypočítáni hashe
+        //========================================
+        const int MAX_NUM = 65536; //highest possible 12-bit int
+        int hash = 0;
+
+        for(size_t i = 0; i < client.CLIENT_USERNAME.size(); i++)
+        {
+            hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
+        } 
+        hash = (hash * 1000) % MAX_NUM;
+
+        int hash_server = (hash * key_pair.first) % MAX_NUM;
+        char hash_server_char[100];
+        sprintf(hash_server_char, "%d", hash_server);
+        string conf_message = hash_server_char;
+        conf_message += "\a\b";
+        const char* confirm_message_char = conf_message.c_str();
+
+        cout << "hash:"<< hash_server_char << endl;
+
+        //assign it to server response that I will send to client
+        responses.SERVER_CONFIRMATION = confirm_message_char;
+        //int hash_client = (hash * key_pair.second) % MAX_NUM;
+
+        send_message(fd_sock,responses.SERVER_CONFIRMATION);
+
+
+         return true;
+    
+    
 }
 
 int main(int argc, char *argv[])
@@ -206,6 +277,8 @@ int main(int argc, char *argv[])
             // communication loop
             while (1)
             {
+                responses responses;
+                client client;
                 // timeout implementation to avoid zombie processes
                 struct timeval timeout;
                 timeout.tv_sec = TIMEOUT;
@@ -246,6 +319,13 @@ int main(int argc, char *argv[])
                 if (!authentization_bool)
                     authentization_bool = authentization(fd_sock);
 
+                if(authentization_bool == false) 
+                {
+                    //TODO
+                    send_message(fd_sock, responses.SERVER_KEY_OUT_OF_RANGE_ERROR );
+                    close(fd_sock);
+                    return false;
+                }
                 /*
                     recv() - used to receive messages from a socket
                             - equivalent to read() -> but has flags
@@ -266,7 +346,7 @@ int main(int argc, char *argv[])
                 if (string("konec") == recv_buffer)
                     break;
 
-                cout << recv_buffer << endl;
+                cout << "GOOHOOGOOG" << endl;
             }
             close(fd_sock);
             return SUCCESS;
