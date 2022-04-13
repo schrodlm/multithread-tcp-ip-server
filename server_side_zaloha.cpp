@@ -31,32 +31,43 @@ enum Returns : char //-> enums for error handling returns
 
 struct responses
 {
-    const char* SERVER_CONFIRMATION;
-    const char* SERVER_MOVE = "102 MOVE\a\b";
-    const char* SERVER_TURN_LEFT = "103 TURN LEFT";
-    const char* SERVER_TURN_RIGHT = "104 TURN RIGHT";
-    const char* SERVER_PICK_UP = "105 GET MESSAGE";
-    const char* SERVER_LOGOUT = "106 LOGOUT";
-    const char* SERVER_KEY_REQUEST = "107 KEY REQUEST\a\b";
-    const char* SERVER_OK = "200 OK\a\b";
-    const char* SERVER_LOGIN_FAILED = "300 LOGIN FAILED\a\b";
-    const char* SERVER_SYNTAX_ERROR = "301 SYNTAX ERROR\a\b";
-    const char* SERVER_LOGIC_ERROR = "302 LOGIC ERROR\a\b";
-    const char* SERVER_KEY_OUT_OF_RANGE_ERROR = "303 KEY OUT OF RANGE\a\b";
+    const char *SERVER_CONFIRMATION;
+    const char *SERVER_MOVE = "102 MOVE\a\b";
+    const char *SERVER_TURN_LEFT = "103 TURN LEFT\a\b";
+    const char *SERVER_TURN_RIGHT = "104 TURN RIGHT\a\b";
+    const char *SERVER_PICK_UP = "105 GET MESSAGE\a\b";
+    const char *SERVER_LOGOUT = "106 LOGOUT\a\b";
+    const char *SERVER_KEY_REQUEST = "107 KEY REQUEST\a\b";
+    const char *SERVER_OK = "200 OK\a\b";
+    const char *SERVER_LOGIN_FAILED = "300 LOGIN FAILED\a\b";
+    const char *SERVER_SYNTAX_ERROR = "301 SYNTAX ERROR\a\b";
+    const char *SERVER_LOGIC_ERROR = "302 LOGIC ERROR\a\b";
+    const char *SERVER_KEY_OUT_OF_RANGE_ERROR = "303 KEY OUT OF RANGE\a\b";
+};
+
+struct client_sizes
+{
+    int SIZE_USERNAME = 20;
+    int SIZE_KEY_ID = 5;
+    int SIZE_CONFIRMATION = 7; 
+    int SIZE_OK = 12;
+    int SIZE_RECHARGING = 12;
+    int SIZE_FULL_POWER = 12;
+    int SIZE_MESSAGE = 12; 
 };
 
 struct client
 {
     string CLIENT_USERNAME;
     int CLIENT_KEY_ID;
-    string CLIENT_INFORMATION;
+    int CLIENT_CONFIRMATION;
     string CLIENT_OK;
     string CLIENT_RECHARGING;
     string CLIENT_FULL_POWER;
     string CLIENT_MESSAGE;
 };
 
-void send_message(int& socket,const char* response)
+void send_message(int &socket, const char *response)
 {
     if (send(socket, response, strlen(response), MSG_NOSIGNAL) < 0)
     {
@@ -69,100 +80,167 @@ void send_message(int& socket,const char* response)
 //==============================================
 /**
  * @brief Checks if received message had the right ending chars
- * 
- * @return true 
- * @return false 
+ *
+ * @return true
+ * @return false
  */
 bool endingCharCheck(const char checkBuffer[8000], int BytesRead)
 {
     if (checkBuffer[BytesRead - 2] != '\a' || checkBuffer[BytesRead - 1] != '\b')
-        {
-            //TODO
-            cout << "Chyba" << endl;
-            return false;
-            
-        }
+    {
+        // TODO
+        cout << "Chyba" << endl;
+        return false;
+    }
     return true;
 }
-//===============================================
-pair<int,int> keyCheck( const int client_id, const vector<pair<int,int>>& key,responses& responses, int& fd_sock){
-        if(client_id < 0 || client_id > 4) 
-        {
-            send_message(fd_sock,responses.SERVER_KEY_OUT_OF_RANGE_ERROR);
-            close(fd_sock);
-            exit(1);
-        }
-            
 
-            pair<int,int> key_pair = key[client_id];
-            return key_pair;
+int recv_message(int &socket, char recv_buffer[8000], int size)
+{
+    int BytesRead = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+
+    //size check
+    if(BytesRead > size)
+    {
+        close(socket);
+        send_message(socket, "301 SYNTAX ERROR\a\b");
+        exit(1);
+    }
+
+    endingCharCheck(recv_buffer, BytesRead);
+    recv_buffer[BytesRead - 2] = '\0';
+
+    if (BytesRead <= 0)
+    {
+        close(socket);
+        exit(1);
+    }
+
+    return BytesRead;
+}
+
+//======================================================================================================================================
+//
+//                                      AUTHENTIZATION
+//
+//======================================================================================================================================
+/**
+ * @brief checks if provided key is right -subfunction of authentization
+ *
+ * @param client_id         --> index of the key - it should be between 0-4
+ * @param key               --> pair of keys, first for server, second for client
+ * @param responses         --> struct of responses to send to client
+ * @param fd_sock           --> socket
+ * @return pair<int,int>    --> returns the pair from key vector
+ */
+pair<int, int> keyCheck(const int client_id, const vector<pair<int, int>> &key, responses &responses, int &fd_sock)
+{
+    if (client_id < 0 || client_id > 4)
+    {
+        send_message(fd_sock, responses.SERVER_KEY_OUT_OF_RANGE_ERROR);
+        cout << "SERVER_KEY_OUT_OF_RANGE" << endl;
+        close(fd_sock);
+        exit(1);
+    }
+
+    pair<int, int> key_pair = key[client_id];
+    return key_pair;
 }
 //===============================================
-bool authentization(int &fd_sock)
-{
-    client client;
-    responses responses;
+/**
+ * @brief authentizates the client -
+ *
+ * @param fd_sock   --> provided socket
+ * @return true     --> client was authentizated
+ * @return false    --> client didnt authentizate
+ */
+void authentization(int &fd_sock, client &client, responses &responses)
+{   
+    client_sizes sizes;
     char recv_buffer[8000];
     // authentizační klíče - slouží k autentizaci klienta
     //  first - server key
     //  second - client key
     vector<pair<int, int>> key = {{23019, 32037}, {32037, 2925}, {18789, 13603}, {16443, 29533}, {18189, 21952}};
 
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_USERNAME);
+    client.CLIENT_USERNAME = recv_buffer;
 
-        int BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+    // sending KEY_REQUEST
+    send_message(fd_sock, responses.SERVER_KEY_REQUEST);
+    recv_message(fd_sock, recv_buffer,sizes.SIZE_KEY_ID);
+    client.CLIENT_KEY_ID = atoi(recv_buffer);
 
-        endingCharCheck(recv_buffer, BytesRead);
-        
-        recv_buffer[BytesRead - 2] = '\0';
-        client.CLIENT_USERNAME = recv_buffer;
+    cout << "CLIENT_KEY_ID:\t" << client.CLIENT_KEY_ID << endl;
 
-        //sending KEY_REQUEST
-        send_message(fd_sock, responses.SERVER_KEY_REQUEST);
-        BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
-        
-        endingCharCheck(recv_buffer, BytesRead);
-        recv_buffer[BytesRead - 2] = '\0';
-        client.CLIENT_KEY_ID = atoi(recv_buffer);
+    // checks if key send by client is legit
+    pair<int, int> key_pair = keyCheck(client.CLIENT_KEY_ID, key, responses, fd_sock);
 
-        cout << client.CLIENT_KEY_ID;
+    // vypočítáni hashe
+    //========================================
+    const int MAX_NUM = 65536; // highest possible 12-bit int
+    int hash = 0;
 
+    for (size_t i = 0; i < client.CLIENT_USERNAME.size(); i++)
+    {
+        hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
+        // debug
+        // cout << (int)client.CLIENT_USERNAME[i] << ":" << client.CLIENT_USERNAME[i] << endl;
+    }
+    hash = (hash * 1000) % MAX_NUM;
 
-        //checks if key send by client is legit
-        pair<int,int> key_pair = keyCheck(client.CLIENT_KEY_ID, key, responses, fd_sock);
+    int hash_server = (hash + key_pair.first) % MAX_NUM;
 
+    char hash_server_char[100];
+    // from int to char
+    sprintf(hash_server_char, "%d", hash_server);
+    string conf_message = hash_server_char;
+    conf_message += "\a\b";
+    const char *confirm_message_char = conf_message.c_str();
 
-        //vypočítáni hashe
-        //========================================
-        const int MAX_NUM = 65536; //highest possible 12-bit int
-        int hash = 0;
+    cout << "SERVER HASH:\t" << hash_server_char << endl;
 
-        for(size_t i = 0; i < client.CLIENT_USERNAME.size(); i++)
-        {
-            hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
-        } 
-        hash = (hash * 1000) % MAX_NUM;
+    // assign it to server response that I will send to client
+    responses.SERVER_CONFIRMATION = confirm_message_char;
+    // int hash_client = (hash * key_pair.second) % MAX_NUM;
 
-        int hash_server = (hash * key_pair.first) % MAX_NUM;
-        char hash_server_char[100];
-        sprintf(hash_server_char, "%d", hash_server);
-        string conf_message = hash_server_char;
-        conf_message += "\a\b";
-        const char* confirm_message_char = conf_message.c_str();
+    send_message(fd_sock, responses.SERVER_CONFIRMATION);
 
-        cout << "hash:"<< hash_server_char << endl;
+    // receiving bash client hash
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_CONFIRMATION);
+    client.CLIENT_CONFIRMATION = atoi(recv_buffer);
 
-        //assign it to server response that I will send to client
-        responses.SERVER_CONFIRMATION = confirm_message_char;
-        //int hash_client = (hash * key_pair.second) % MAX_NUM;
+    cout << "CLIENT_CNFRM:\t" << client.CLIENT_CONFIRMATION << endl;
 
-        send_message(fd_sock,responses.SERVER_CONFIRMATION);
+    int hash_client = (hash + key_pair.second) % MAX_NUM;
 
+    // is hash_client send by client and calculated by server the same
+    if (client.CLIENT_CONFIRMATION == hash_client)
+        send_message(fd_sock, responses.SERVER_OK);
 
-         return true;
+    else
+    {
+        send_message(fd_sock, responses.SERVER_LOGIN_FAILED);
+        close(fd_sock);
+        exit(1);
+    }
+}
+//======================================================================================================================================
+//
+//                                      SEARCH FOR SECRET
+//
+//======================================================================================================================================
+void searchForSecret(int &fd_sock, client &client, responses &responses)
+{
+    client_sizes sizes;
+    char recv_buffer[8000];
+
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
     
     
 }
-
+//======================================================================================================================================
 int main(int argc, char *argv[])
 {
     if (argc < 2) // error handling: wrong input
@@ -272,8 +350,6 @@ int main(int argc, char *argv[])
 
             int select_retval;
             char recv_buffer[SIZE_OF_BUFFER];
-            char send_buffer[SIZE_OF_BUFFER];
-            bool authentization_bool = false;
             // communication loop
             while (1)
             {
@@ -314,23 +390,19 @@ int main(int argc, char *argv[])
                     close(fd_sock);
                     return SUCCESS;
                 }
-
+                //==============================================================================
                 // AUTENTIZACE
-                if (!authentization_bool)
-                    authentization_bool = authentization(fd_sock);
+                authentization(fd_sock, client, responses);
+                //==============================================================================
 
-                if(authentization_bool == false) 
-                {
-                    //TODO
-                    send_message(fd_sock, responses.SERVER_KEY_OUT_OF_RANGE_ERROR );
-                    close(fd_sock);
-                    return false;
-                }
+                searchForSecret(fd_sock, client, responses);
+
                 /*
                     recv() - used to receive messages from a socket
                             - equivalent to read() -> but has flags
                             - returns lenght of the message on succesfull completion
                 */
+
                 int BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
                 // error handling
                 if (BytesRead <= 0)
@@ -339,14 +411,6 @@ int main(int argc, char *argv[])
                     close(fd_sock);
                     return SOCKET_READING_ERROR;
                 }
-
-                recv_buffer[BytesRead] = '\0';
-
-                // Pokud prijmu konec ukoncim aktualni child procces
-                if (string("konec") == recv_buffer)
-                    break;
-
-                cout << "GOOHOOGOOG" << endl;
             }
             close(fd_sock);
             return SUCCESS;
