@@ -12,6 +12,14 @@ using namespace std;
 #include <utility>
 #include <string.h>
 
+enum Direction : char //-> for directions
+{
+    DOLEVA = 0,
+    DOPRAVA = 1,
+    DOLU = 2,
+    NAHORU = 3,
+};
+
 enum Returns : char //-> enums for error handling returns
 {
     SUCCESS = 0,
@@ -49,11 +57,11 @@ struct client_sizes
 {
     int SIZE_USERNAME = 20;
     int SIZE_KEY_ID = 5;
-    int SIZE_CONFIRMATION = 7; 
+    int SIZE_CONFIRMATION = 7;
     int SIZE_OK = 12;
     int SIZE_RECHARGING = 12;
     int SIZE_FULL_POWER = 12;
-    int SIZE_MESSAGE = 12; 
+    int SIZE_MESSAGE = 12;
 };
 
 struct client
@@ -99,8 +107,8 @@ int recv_message(int &socket, char recv_buffer[8000], int size)
 {
     int BytesRead = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
 
-    //size check
-    if(BytesRead > size)
+    // size check
+    if (BytesRead > size)
     {
         close(socket);
         send_message(socket, "301 SYNTAX ERROR\a\b");
@@ -119,6 +127,36 @@ int recv_message(int &socket, char recv_buffer[8000], int size)
     return BytesRead;
 }
 
+/**
+ * @brief return a pair of coordinates robot is at, also checks if received message was correct
+ *
+ * @param recv_buffer       --> buffer
+ * @param fd_sock           --> socket
+ * @return pair<int,int>    --> coordinates
+ */
+pair<int, int> split(char recv_buffer[8000], int &fd_sock)
+{
+    pair<int, int> pair;
+    const char test[20] = "OK";
+    const char *delim = " ";
+    char *token = strtok(recv_buffer, delim);
+
+    if (strcmp(token, test))
+    {
+        cout << strcmp(token, test) << endl;
+        cout << token << endl;
+        close(fd_sock);
+        exit(1);
+    }
+
+    token = strtok(NULL, delim);
+    pair.first = atoi(token);
+
+    token = strtok(NULL, delim);
+    pair.second = atoi(token);
+
+    return pair;
+}
 //======================================================================================================================================
 //
 //                                      AUTHENTIZATION
@@ -155,7 +193,7 @@ pair<int, int> keyCheck(const int client_id, const vector<pair<int, int>> &key, 
  * @return false    --> client didnt authentizate
  */
 void authentization(int &fd_sock, client &client, responses &responses)
-{   
+{
     client_sizes sizes;
     char recv_buffer[8000];
     // authentizační klíče - slouží k autentizaci klienta
@@ -165,10 +203,15 @@ void authentization(int &fd_sock, client &client, responses &responses)
 
     recv_message(fd_sock, recv_buffer, sizes.SIZE_USERNAME);
     client.CLIENT_USERNAME = recv_buffer;
+    if(client.CLIENT_USERNAME > sizes.SIZE_USERNAME)
+    {
+        close(fd_sock);
+        exit(1);
+    }
 
     // sending KEY_REQUEST
     send_message(fd_sock, responses.SERVER_KEY_REQUEST);
-    recv_message(fd_sock, recv_buffer,sizes.SIZE_KEY_ID);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_KEY_ID);
     client.CLIENT_KEY_ID = atoi(recv_buffer);
 
     cout << "CLIENT_KEY_ID:\t" << client.CLIENT_KEY_ID << endl;
@@ -230,15 +273,226 @@ void authentization(int &fd_sock, client &client, responses &responses)
 //                                      SEARCH FOR SECRET
 //
 //======================================================================================================================================
+
+/**
+ * @brief i have to know the direction which the robot is pointed toward so server can navigate toward secret message
+ *
+ * @param fd_sock               --> socket
+ * @param responses             --> server responses
+ * @param recv_buffer           --> buffer
+ * pair<int,int>& second_step   --> pair of coordinates, when we will begin moving the robot - server will be reffering to them
+ */
+int direction(int fd_sock, responses responses, char recv_buffer[8000], pair<int, int> &second_step)
+{
+    client_sizes sizes;
+    pair<int, int> first_step;
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    first_step = split(recv_buffer, fd_sock);
+
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    second_step = split(recv_buffer, fd_sock);
+
+    // comparing X values
+    if (first_step.first > second_step.first)
+        return DOLEVA;
+    else if (first_step.first < second_step.first)
+        return DOPRAVA;
+    // comparing Y values
+    else if (first_step.second > second_step.second)
+        return DOLU;
+    else if (first_step.second < second_step.second)
+        return NAHORU;
+    // vyskytla se prekazka
+    // todo
+    else
+    {
+        cout << "prekazka na startu" << endl;
+        send_message(fd_sock, responses.SERVER_TURN_LEFT);
+        recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+        return direction(fd_sock, responses, recv_buffer, second_step);
+    }
+}
+
+/**
+ * @brief   when moving the robot, we have to take into account his rotation, to make it easier,
+ *          i decided, after every move (to the left, to the right, up and down) he will be rotated to the right
+ *          -->this will make moving the robot much easier (also more expensive thought)
+ *
+ * @param fd_sock       --> socket
+ * @param responses     --> server responses
+ * @param recv_buffer   --> receiving buffer
+ * @param smer          --> enum to which he direction is rotated righ now
+ */
+void setDirRight(int fd_sock, responses responses, char recv_buffer[8000], int smer)
+{
+
+    client_sizes sizes;
+
+    switch (smer)
+    {
+    case DOPRAVA:
+        break;
+    case DOLEVA:
+        send_message(fd_sock, responses.SERVER_TURN_LEFT);
+        recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+        send_message(fd_sock, responses.SERVER_TURN_LEFT);
+        recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+        break;
+
+    case NAHORU:
+        send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+        recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+        break;
+    case DOLU:
+
+        send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+        recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+        break;
+    }
+}
+
+pair<int, int> moveLeft(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+{
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    pair<int, int> coords = split(recv_buffer, fd_sock);
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+
+    return coords;
+}
+pair<int, int> moveRight(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+{
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    pair<int, int> coords = split(recv_buffer, fd_sock);
+
+    return coords;
+}
+
+pair<int, int> moveUp(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+{
+    send_message(fd_sock, responses.SERVER_TURN_LEFT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    pair<int, int> coords = split(recv_buffer, fd_sock);
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+
+    return coords;
+}
+pair<int, int> moveDown(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+{
+    send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    send_message(fd_sock, responses.SERVER_MOVE);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+    pair<int, int> coords = split(recv_buffer, fd_sock);
+    send_message(fd_sock, responses.SERVER_TURN_LEFT);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+
+    return coords;
+}
+void xMovement(int &fd_sock, pair<int, int> &now_coords, responses responses, char recv_buffer[8000], int smer, client_sizes sizes, pair<int, int> &previous_coords)
+{
+
+    if (now_coords.first > 0)
+    {
+        previous_coords = now_coords;
+        now_coords = moveLeft(fd_sock, responses, recv_buffer, smer, sizes);
+        cout << "move: Left\n("
+             << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
+    }
+    if (now_coords.first < 0)
+    {
+        previous_coords = now_coords;
+        now_coords = moveRight(fd_sock, responses, recv_buffer, smer, sizes);
+        cout << "move: Right\n("
+             << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
+    }
+}
+
 void searchForSecret(int &fd_sock, client &client, responses &responses)
 {
     client_sizes sizes;
     char recv_buffer[8000];
+    pair<int, int> previous_coords = {0, 0};
+    pair<int, int> now_coords;
+    pair<int, int> secret_pair = {0, 0};
 
-    send_message(fd_sock, responses.SERVER_MOVE);
-    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
-    
-    
+    int smer = direction(fd_sock, responses, recv_buffer, now_coords);
+
+    // i want direction to be right so I can work with robot two dimensionaly
+    setDirRight(fd_sock, responses, recv_buffer, smer);
+
+    while (now_coords != secret_pair)
+    {
+
+        if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
+        {
+            moveDown(fd_sock, responses, recv_buffer, smer, sizes);
+            xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+        }
+
+        if (now_coords.second > 0)
+        {
+            previous_coords = now_coords;
+            now_coords = moveDown(fd_sock, responses, recv_buffer, smer, sizes);
+            cout << "move: Down\n( "
+                 << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
+
+            if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
+            {
+                moveUp(fd_sock, responses, recv_buffer, smer, sizes);
+                xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+            }
+            else if (now_coords != previous_coords)
+                continue;
+        }
+
+        if (now_coords.second < 0)
+        {
+            previous_coords = now_coords;
+            now_coords = moveUp(fd_sock, responses, recv_buffer, smer, sizes);
+            cout << "move: Up\n("
+                 << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
+
+            if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
+            {
+                moveDown(fd_sock, responses, recv_buffer, smer, sizes);
+                xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+            }
+            if (now_coords != previous_coords)
+                continue;
+        }
+
+        // if we are done with Y coordination --> Y=0 OR Y path is blocked we move in X axis
+        xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+    }
+
+    send_message(fd_sock, responses.SERVER_PICK_UP);
+    send_message(fd_sock, responses.SERVER_LOGOUT);
+    //  cout << "NAHORU" << endl;
+    // moveUp(fd_sock, responses, recv_buffer,smer,sizes);
+    // cout << recv_buffer << endl;
+    //  cout << "DOLU" << endl;
+    // moveDown(fd_sock, responses, recv_buffer,smer,sizes);
+    //  cout << recv_buffer << endl;
+    //  cout << "DOLEVA" << endl;
+    // moveLeft(fd_sock, responses, recv_buffer,smer,sizes);
+    //  cout << recv_buffer << endl;
+    //  cout << "DOPRAVA" << endl;
+    // moveRight(fd_sock, responses, recv_buffer,smer,sizes);
+    //  cout << recv_buffer << endl;
 }
 //======================================================================================================================================
 int main(int argc, char *argv[])
