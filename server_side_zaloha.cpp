@@ -36,6 +36,13 @@ enum Returns : char //-> enums for error handling returns
 
 #define SIZE_OF_BUFFER 8000
 #define TIMEOUT 1
+fd_set sockets2;
+
+int select_retval2;
+
+fd_set sockets;
+
+int select_retval;
 
 struct responses
 {
@@ -124,8 +131,47 @@ int RemoveChars(char *s, char c, int Bytes)
 
 int recv_message(int &socket, char recv_buffer[8000], int size)
 {   
+
+    
+    struct timeval timeout;
+                timeout.tv_sec = 2;
+                timeout.tv_usec = 0;
+                FD_ZERO(&sockets);         // set adress of fd_set sockets to zero
+                FD_SET(socket, &sockets); // add sockets, we want to listen to
+
+                /*
+                everytime we call recv(), we want to avoid blocking (recv() is a blocking function)
+                -> we call select() before recv() => it blocks multiple sockets at once, so if socket has
+                ready to read data select() unblocks and we can react
+
+                select() timeout argument - The timeout argument is a timeval structure that specifies the interval that select() should block
+                waiting for a file descriptor to become ready
+
+                --> after each read select() decrement the time that select() was waiting for from the timeout value
+                --> in this case client has 10 seconds to do everything he needs to do
+
+                */
+                select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
+                if (select_retval == 0)
+                {
+                    perror("Select error: ");
+                    close(socket);
+                    return SELECT_ERROR;
+                }
+                // FD_ISSET - checks if in data structure sockets - fd_sock is set
+                //  --> testing this because selectv() unsets it after timeout
+                if (!FD_ISSET(socket, &sockets))
+                {
+                    cout << "Connection timeout!" << endl;
+                    close(socket);
+                    return SUCCESS;
+                }
     int removed_chars = 0;
     int BytesRead = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+    if(BytesRead == -1)
+    {
+        cout << "conenction timeout";
+    }
     
     removed_chars = RemoveChars(recv_buffer, '\0', BytesRead);
 
@@ -141,6 +187,21 @@ int recv_message(int &socket, char recv_buffer[8000], int size)
         while (recv_buffer[BytesRead - 2] != '\a' && recv_buffer[BytesRead - 1] != '\b')
     {
             //kdyz je zprava rozdelena na vice casti
+            select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
+                if (select_retval == 0)
+                {
+                    perror("Select error: ");
+                    close(socket);
+                    return SELECT_ERROR;
+                }
+                // FD_ISSET - checks if in data structure sockets - fd_sock is set
+                //  --> testing this because selectv() unsets it after timeout
+                if (!FD_ISSET(socket, &sockets))
+                {
+                    cout << "Connection timeout!" << endl;
+                    close(socket);
+                    return SUCCESS;
+                }
         BytesRead += recv(socket, recv_buffer + BytesRead, SIZE_OF_BUFFER - 1, 0);
         //cout << recv_buffer << endl;
 
@@ -517,6 +578,7 @@ void searchForSecret(int &fd_sock, client &client, responses &responses)
     send_message(fd_sock, responses.SERVER_PICK_UP);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_MESSAGE);
     send_message(fd_sock, responses.SERVER_LOGOUT);
+    close(fd_sock);
     
 }
 //======================================================================================================================================
@@ -625,9 +687,7 @@ int main(int argc, char *argv[])
             close(sock);
 
             // special data type that works with select()
-            fd_set sockets;
-
-            int select_retval;
+            
             char recv_buffer[SIZE_OF_BUFFER];
             // communication loop
             while (1)
@@ -635,40 +695,7 @@ int main(int argc, char *argv[])
                 responses responses;
                 client client;
                 // timeout implementation to avoid zombie processes
-                struct timeval timeout;
-                timeout.tv_sec = TIMEOUT;
-                timeout.tv_usec = 0;
-
-                FD_ZERO(&sockets);         // set adress of fd_set sockets to zero
-                FD_SET(fd_sock, &sockets); // add sockets, we want to listen to
-
-                /*
-                everytime we call recv(), we want to avoid blocking (recv() is a blocking function)
-                -> we call select() before recv() => it blocks multiple sockets at once, so if socket has
-                ready to read data select() unblocks and we can react
-
-                select() timeout argument - The timeout argument is a timeval structure that specifies the interval that select() should block
-                waiting for a file descriptor to become ready
-
-                --> after each read select() decrement the time that select() was waiting for from the timeout value
-                --> in this case client has 10 seconds to do everything he needs to do
-
-                */
-                select_retval = select(fd_sock + 1, &sockets, NULL, NULL, &timeout);
-                if (select_retval < 0)
-                {
-                    perror("Select error: ");
-                    close(fd_sock);
-                    return SELECT_ERROR;
-                }
-                // FD_ISSET - checks if in data structure sockets - fd_sock is set
-                //  --> testing this because selectv() unsets it after timeout
-                if (!FD_ISSET(fd_sock, &sockets))
-                {
-                    cout << "Connection timeout!" << endl;
-                    close(fd_sock);
-                    return SUCCESS;
-                }
+                
                 //==============================================================================
                 // AUTENTIZACE
                 authentization(fd_sock, client, responses);
