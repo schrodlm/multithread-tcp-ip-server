@@ -61,7 +61,7 @@ struct client_sizes
     int SIZE_OK = 12;
     int SIZE_RECHARGING = 12;
     int SIZE_FULL_POWER = 12;
-    int SIZE_MESSAGE = 12;
+    int SIZE_MESSAGE = 100;
 };
 
 struct client
@@ -85,6 +85,24 @@ void send_message(int &socket, const char *response)
     }
 }
 
+int RemoveChars(char *s, char c, int Bytes)
+{
+    int writer = 0, reader = 0;
+    int i =0;
+    while (i < Bytes)
+    {
+        if (s[reader]!=c) 
+        {   
+            s[writer++] = s[reader];
+        }
+        i++;
+        reader++;       
+    }
+
+    s[writer]=0;
+    
+    return (Bytes - writer);
+}
 //==============================================
 /**
  * @brief Checks if received message had the right ending chars
@@ -92,31 +110,42 @@ void send_message(int &socket, const char *response)
  * @return true
  * @return false
  */
-bool endingCharCheck(const char checkBuffer[8000], int BytesRead)
-{
-    if (checkBuffer[BytesRead - 2] != '\a' || checkBuffer[BytesRead - 1] != '\b')
-    {
-        // TODO
-        cout << "Chyba" << endl;
-        return false;
-    }
-    return true;
-}
+// bool endingCharCheck(const char checkBuffer[8000], int BytesRead)
+// {
+//     if (checkBuffer[BytesRead - 2] != '\a' || checkBuffer[BytesRead - 1] != '\b')
+//     {
+//         // TODO
+//         cout << "Zprava je rozdelena na více částí" << endl;
+//         recv_message()
+//         return false;
+//     }
+//     return true;
+// }
 
 int recv_message(int &socket, char recv_buffer[8000], int size)
-{
+{   
+    int removed_chars = 0;
     int BytesRead = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+    
+    removed_chars = RemoveChars(recv_buffer, '\0', BytesRead);
 
     // size check
-    if (BytesRead > size)
+    if ((BytesRead - 2) > size)
     {
-        close(socket);
+        
         send_message(socket, "301 SYNTAX ERROR\a\b");
+        close(socket);
         exit(1);
     }
 
-    endingCharCheck(recv_buffer, BytesRead);
-    recv_buffer[BytesRead - 2] = '\0';
+        while (recv_buffer[BytesRead - 2] != '\a' && recv_buffer[BytesRead - 1] != '\b')
+    {
+            //kdyz je zprava rozdelena na vice casti
+        BytesRead += recv(socket, recv_buffer + BytesRead, SIZE_OF_BUFFER - 1, 0);
+        //cout << recv_buffer << endl;
+
+    }
+    recv_buffer[BytesRead - (2+removed_chars)] = '\0';
 
     if (BytesRead <= 0)
     {
@@ -202,8 +231,10 @@ void authentization(int &fd_sock, client &client, responses &responses)
     vector<pair<int, int>> key = {{23019, 32037}, {32037, 2925}, {18789, 13603}, {16443, 29533}, {18189, 21952}};
 
     recv_message(fd_sock, recv_buffer, sizes.SIZE_USERNAME);
+    cout << "buffer:" << sizeof(recv_buffer) << endl;
     client.CLIENT_USERNAME = recv_buffer;
-    if(client.CLIENT_USERNAME > sizes.SIZE_USERNAME)
+    cout <<"Jmeno:" << client.CLIENT_USERNAME << endl;
+    if((int)client.CLIENT_USERNAME.size() > sizes.SIZE_USERNAME)
     {
         close(fd_sock);
         exit(1);
@@ -226,7 +257,11 @@ void authentization(int &fd_sock, client &client, responses &responses)
 
     for (size_t i = 0; i < client.CLIENT_USERNAME.size(); i++)
     {
+        
+
         hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
+        cout << "char:" << client.CLIENT_USERNAME[i] << endl;
+        cout << "velikost char:" << (int)client.CLIENT_USERNAME[i] << endl;
         // debug
         // cout << (int)client.CLIENT_USERNAME[i] << ":" << client.CLIENT_USERNAME[i] << endl;
     }
@@ -347,7 +382,7 @@ void setDirRight(int fd_sock, responses responses, char recv_buffer[8000], int s
         break;
     case DOLU:
 
-        send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+        send_message(fd_sock, responses.SERVER_TURN_LEFT);
         recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
         break;
     }
@@ -480,19 +515,9 @@ void searchForSecret(int &fd_sock, client &client, responses &responses)
     }
 
     send_message(fd_sock, responses.SERVER_PICK_UP);
+    recv_message(fd_sock, recv_buffer, sizes.SIZE_MESSAGE);
     send_message(fd_sock, responses.SERVER_LOGOUT);
-    //  cout << "NAHORU" << endl;
-    // moveUp(fd_sock, responses, recv_buffer,smer,sizes);
-    // cout << recv_buffer << endl;
-    //  cout << "DOLU" << endl;
-    // moveDown(fd_sock, responses, recv_buffer,smer,sizes);
-    //  cout << recv_buffer << endl;
-    //  cout << "DOLEVA" << endl;
-    // moveLeft(fd_sock, responses, recv_buffer,smer,sizes);
-    //  cout << recv_buffer << endl;
-    //  cout << "DOPRAVA" << endl;
-    // moveRight(fd_sock, responses, recv_buffer,smer,sizes);
-    //  cout << recv_buffer << endl;
+    
 }
 //======================================================================================================================================
 int main(int argc, char *argv[])
@@ -650,22 +675,13 @@ int main(int argc, char *argv[])
                 //==============================================================================
 
                 searchForSecret(fd_sock, client, responses);
-
                 /*
                     recv() - used to receive messages from a socket
                             - equivalent to read() -> but has flags
                             - returns lenght of the message on succesfull completion
                 */
-
-                int BytesRead = recv(fd_sock, recv_buffer, SIZE_OF_BUFFER - 1, 0);
-                // error handling
-                if (BytesRead <= 0)
-                {
-                    perror("Socket reading error:");
-                    close(fd_sock);
-                    return SOCKET_READING_ERROR;
-                }
             }
+            cout << "Zaviram" << endl;
             close(fd_sock);
             return SUCCESS;
         }
