@@ -11,6 +11,10 @@ using namespace std;
 #include <vector>
 #include <utility>
 #include <string.h>
+#include <list>
+#include <string>
+#include <regex>
+
 
 enum Direction : char //-> for directions
 {
@@ -36,9 +40,6 @@ enum Returns : char //-> enums for error handling returns
 
 #define SIZE_OF_BUFFER 8000
 #define TIMEOUT 1
-fd_set sockets2;
-
-int select_retval2;
 
 fd_set sockets;
 
@@ -82,6 +83,8 @@ struct client
     string CLIENT_MESSAGE;
 };
 
+list<string> v_messages;
+
 void send_message(int &socket, const char *response)
 {
     if (send(socket, response, strlen(response), MSG_NOSIGNAL) < 0)
@@ -95,118 +98,114 @@ void send_message(int &socket, const char *response)
 int RemoveChars(char *s, char c, int Bytes)
 {
     int writer = 0, reader = 0;
-    int i =0;
+    int i = 0;
     while (i < Bytes)
     {
-        if (s[reader]!=c) 
-        {   
+        if (s[reader] != c)
+        {
             s[writer++] = s[reader];
         }
         i++;
-        reader++;       
+        reader++;
     }
 
-    s[writer]=0;
-    
+    s[writer] = 0;
+
     return (Bytes - writer);
 }
 //==============================================
-/**
- * @brief Checks if received message had the right ending chars
- *
- * @return true
- * @return false
- */
-// bool endingCharCheck(const char checkBuffer[8000], int BytesRead)
-// {
-//     if (checkBuffer[BytesRead - 2] != '\a' || checkBuffer[BytesRead - 1] != '\b')
-//     {
-//         // TODO
-//         cout << "Zprava je rozdelena na více částí" << endl;
-//         recv_message()
-//         return false;
-//     }
-//     return true;
-// }
+void splitToVector(string s)
+{
+    cout << "size of s: " << s.size() << endl;
+
+    std::string delimeter = "\a\b";
+    if (s.find("\a\b") == std::string::npos)
+    {
+        std::cout << "it isnt here" << '\n';
+        v_messages.push_back(s);
+    }
+    else
+    {
+        size_t pos = 0;
+        std::string token;
+        while ((pos = s.find(delimeter)) != std::string::npos)
+        {
+            token = s.substr(0, pos);
+            token += "\a\b\0";
+            v_messages.push_back(token);
+            s.erase(0, pos + delimeter.length());
+        }
+    }
+
+cout << "vypsani listu:" << endl;
+auto it = v_messages.begin();
+  while(it != v_messages.end())
+  {
+    std::cout << *it << std::endl;
+    it++;
+  }
+
+  for(int i = 0; i < (int)s.size(); i++)
+  {
+    std::cout << (int)s[i] << std::endl;
+  }
+}
+void weird_char_check(char c[8000],int size)
+{
+    for(int i = 0; i < (size - 3); i++ )
+    {
+        if(c[i] == '\a' && c[i+1] == '\0' && c[i+2] == '\b')
+        {
+            c[i] = 15;
+            c[i+2] = '\0';
+        }
+    }
+}
 
 int recv_message(int &socket, char recv_buffer[8000], int size)
-{   
-
-    
-    struct timeval timeout;
-                timeout.tv_sec = 2;
-                timeout.tv_usec = 0;
-                FD_ZERO(&sockets);         // set adress of fd_set sockets to zero
-                FD_SET(socket, &sockets); // add sockets, we want to listen to
-
-                /*
-                everytime we call recv(), we want to avoid blocking (recv() is a blocking function)
-                -> we call select() before recv() => it blocks multiple sockets at once, so if socket has
-                ready to read data select() unblocks and we can react
-
-                select() timeout argument - The timeout argument is a timeval structure that specifies the interval that select() should block
-                waiting for a file descriptor to become ready
-
-                --> after each read select() decrement the time that select() was waiting for from the timeout value
-                --> in this case client has 10 seconds to do everything he needs to do
-
-                */
-                select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
-                if (select_retval == 0)
-                {
-                    perror("Select error: ");
-                    close(socket);
-                    return SELECT_ERROR;
-                }
-                // FD_ISSET - checks if in data structure sockets - fd_sock is set
-                //  --> testing this because selectv() unsets it after timeout
-                if (!FD_ISSET(socket, &sockets))
-                {
-                    cout << "Connection timeout!" << endl;
-                    close(socket);
-                    return SUCCESS;
-                }
+{
     int removed_chars = 0;
-    int BytesRead = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
-    if(BytesRead == -1)
-    {
-        cout << "conenction timeout";
-    }
+    int BytesRead = 0;
     
+    if (v_messages.empty())
+    {
+        memset (recv_buffer,'\0',100);
+        cout << "isempty()" << endl;
+        int number_bytes = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+        cout << "recv_buffer is:\t" << strlen(recv_buffer) << endl;
+        weird_char_check(recv_buffer, number_bytes);
+        removed_chars = RemoveChars(recv_buffer, '\0', number_bytes); 
+        string new_recv_buffer = recv_buffer;
+        cout << "recv_buffer is:\t" << new_recv_buffer.size() << endl;
+        splitToVector(new_recv_buffer);
+    }
+
+        string str = v_messages.front();
+        v_messages.pop_front();
+
+        cout << "STRING = " << str << endl;
+        const char *recv_buffer_const = str.c_str();
+        strcpy(recv_buffer, recv_buffer_const);
+        BytesRead = strlen(recv_buffer);
+
+
     removed_chars = RemoveChars(recv_buffer, '\0', BytesRead);
 
     // size check
     if ((BytesRead - 2) > size)
     {
-        
+
         send_message(socket, "301 SYNTAX ERROR\a\b");
         close(socket);
         exit(1);
     }
 
-        while (recv_buffer[BytesRead - 2] != '\a' && recv_buffer[BytesRead - 1] != '\b')
+    while (recv_buffer[BytesRead - 2] != '\a' && recv_buffer[BytesRead - 1] != '\b')
     {
-            //kdyz je zprava rozdelena na vice casti
-            select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
-                if (select_retval == 0)
-                {
-                    perror("Select error: ");
-                    close(socket);
-                    return SELECT_ERROR;
-                }
-                // FD_ISSET - checks if in data structure sockets - fd_sock is set
-                //  --> testing this because selectv() unsets it after timeout
-                if (!FD_ISSET(socket, &sockets))
-                {
-                    cout << "Connection timeout!" << endl;
-                    close(socket);
-                    return SUCCESS;
-                }
         BytesRead += recv(socket, recv_buffer + BytesRead, SIZE_OF_BUFFER - 1, 0);
-        //cout << recv_buffer << endl;
-
+        //cout << "RECV_BUFFER:" << recv_buffer << endl;
     }
-    recv_buffer[BytesRead - (2+removed_chars)] = '\0';
+    recv_buffer[BytesRead - (2 + removed_chars)] = '\0';
 
     if (BytesRead <= 0)
     {
@@ -292,10 +291,9 @@ void authentization(int &fd_sock, client &client, responses &responses)
     vector<pair<int, int>> key = {{23019, 32037}, {32037, 2925}, {18789, 13603}, {16443, 29533}, {18189, 21952}};
 
     recv_message(fd_sock, recv_buffer, sizes.SIZE_USERNAME);
-    cout << "buffer:" << sizeof(recv_buffer) << endl;
     client.CLIENT_USERNAME = recv_buffer;
-    cout <<"Jmeno:" << client.CLIENT_USERNAME << endl;
-    if((int)client.CLIENT_USERNAME.size() > sizes.SIZE_USERNAME)
+    cout << "Jmeno:" << client.CLIENT_USERNAME << endl;
+    if ((int)client.CLIENT_USERNAME.size() > sizes.SIZE_USERNAME)
     {
         close(fd_sock);
         exit(1);
@@ -318,7 +316,6 @@ void authentization(int &fd_sock, client &client, responses &responses)
 
     for (size_t i = 0; i < client.CLIENT_USERNAME.size(); i++)
     {
-        
 
         hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
         cout << "char:" << client.CLIENT_USERNAME[i] << endl;
@@ -579,7 +576,6 @@ void searchForSecret(int &fd_sock, client &client, responses &responses)
     recv_message(fd_sock, recv_buffer, sizes.SIZE_MESSAGE);
     send_message(fd_sock, responses.SERVER_LOGOUT);
     close(fd_sock);
-    
 }
 //======================================================================================================================================
 int main(int argc, char *argv[])
@@ -687,15 +683,13 @@ int main(int argc, char *argv[])
             close(sock);
 
             // special data type that works with select()
-            
-            char recv_buffer[SIZE_OF_BUFFER];
             // communication loop
             while (1)
             {
                 responses responses;
                 client client;
                 // timeout implementation to avoid zombie processes
-                
+
                 //==============================================================================
                 // AUTENTIZACE
                 authentization(fd_sock, client, responses);
