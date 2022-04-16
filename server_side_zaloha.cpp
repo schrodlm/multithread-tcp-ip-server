@@ -1,3 +1,14 @@
+/**
+ * @file main.cpp
+ * @author Matěj Schrödl (matej.schrodl@gmail.com)
+ * @brief   multi-threaded server for TCP / IP communication, its purpose is to guide robot (client) through a maze to get a secret message
+ * @version 0.8
+ * @date 2022-04-16
+ * 
+ * @copyright Copyright (c) 2022
+ * 
+ */
+
 #include <iostream>
 using namespace std;
 
@@ -15,6 +26,14 @@ using namespace std;
 #include <string>
 #include <regex>
 
+//======================================================================================================================================
+//
+//                                      INITIALIZATION
+//
+//======================================================================================================================================
+
+#define SIZE_OF_BUFFER 500
+#define TIMEOUT 1 // time for a client to respond
 
 enum Direction : char //-> for directions
 {
@@ -38,14 +57,12 @@ enum Returns : char //-> enums for error handling returns
     SOCKET_READING_ERROR = -9
 };
 
-#define SIZE_OF_BUFFER 8000
-#define TIMEOUT 1
 
-fd_set sockets;
-
-int select_retval;
-
-struct responses
+/**
+ * @brief server messages to client
+ * 
+ */
+struct response
 {
     const char *SERVER_CONFIRMATION;
     const char *SERVER_MOVE = "102 MOVE\a\b";
@@ -60,7 +77,12 @@ struct responses
     const char *SERVER_LOGIC_ERROR = "302 LOGIC ERROR\a\b";
     const char *SERVER_KEY_OUT_OF_RANGE_ERROR = "303 KEY OUT OF RANGE\a\b";
 };
+response responses;
 
+/**
+ * @brief max sizes of clients messages
+ * 
+ */
 struct client_sizes
 {
     int SIZE_USERNAME = 20;
@@ -71,8 +93,13 @@ struct client_sizes
     int SIZE_FULL_POWER = 12;
     int SIZE_MESSAGE = 100;
 };
+client_sizes sizes;
 
-struct client
+/**
+ * @brief storage for clients info
+ * 
+ */
+struct client_info
 {
     string CLIENT_USERNAME;
     int CLIENT_KEY_ID;
@@ -82,46 +109,79 @@ struct client
     string CLIENT_FULL_POWER;
     string CLIENT_MESSAGE;
 };
+client_info client;
 
+//list of received messages, messages need to be stores beccause of fragmentation and merging 
 list<string> v_messages;
 
+//timeout structures
+fd_set sockets;
+int select_retval;
+
+
+//======================================================================================================================================
+//
+//                                      UTILITY FUNCTIONS
+//
+//======================================================================================================================================
+
+
+
+
+/**
+ * @brief sends a message to a client
+ * 
+ * @param socket    --> socket
+ * @param response  --> message to send
+ */
 void send_message(int &socket, const char *response)
 {
     if (send(socket, response, strlen(response), MSG_NOSIGNAL) < 0)
     {
         perror("Unable to send data - locally detected error");
         close(socket);
-        exit(SEND_ERROR);
+        _exit(SEND_ERROR);
     }
 }
 
-int RemoveChars(char *s, char c, int Bytes)
+/**
+ * @brief removes all occurences of '\0', used to deal with strange usernames such as "\a\a\0\b\b\a\0\a\b"
+ * 
+ * @param buffer         --> buffer
+ * @param c         --> "\0"
+ * @param buffer_lenght     --> lenght of buffer
+ * @return int 
+ */
+int RemoveChars(char *buffer, char c, int buffer_lenght)
 {
     int writer = 0, reader = 0;
     int i = 0;
-    while (i < Bytes)
+    while (i < buffer_lenght)
     {
-        if (s[reader] != c)
+        if (buffer[reader] != c)
         {
-            s[writer++] = s[reader];
+            buffer[writer++] = buffer[reader];
         }
         i++;
         reader++;
     }
 
-    s[writer] = 0;
+    buffer[writer] = 0;
 
-    return (Bytes - writer);
+    return (buffer_lenght - writer);
 }
-//==============================================
+
+/**
+ * @brief splits string received from a buffer a pushes individual messages to list v_messages
+ * 
+ * @param s     --> buffer
+ */
 void splitToVector(string s)
 {
-    cout << "size of s: " << s.size() << endl;
 
     std::string delimeter = "\a\b";
     if (s.find("\a\b") == std::string::npos)
     {
-        std::cout << "it isnt here" << '\n';
         v_messages.push_back(s);
     }
     else
@@ -135,59 +195,95 @@ void splitToVector(string s)
             v_messages.push_back(token);
             s.erase(0, pos + delimeter.length());
         }
+        if (s != "\0")
+            v_messages.push_back(s);
     }
-
-cout << "vypsani listu:" << endl;
-auto it = v_messages.begin();
-  while(it != v_messages.end())
-  {
-    std::cout << *it << std::endl;
-    it++;
-  }
-
-  for(int i = 0; i < (int)s.size(); i++)
-  {
-    std::cout << (int)s[i] << std::endl;
-  }
 }
-void weird_char_check(char c[8000],int size)
+
+/**
+ * @brief function to deal with weird usernames
+ * 
+ * @param c 
+ * @param size 
+ */
+void weird_char_check(char c[SIZE_OF_BUFFER], int size)
 {
-    for(int i = 0; i < (size - 3); i++ )
+    for (int i = 0; i < (size - 3); i++)
     {
-        if(c[i] == '\a' && c[i+1] == '\0' && c[i+2] == '\b')
+        if (c[i] == '\a' && c[i + 1] == '\0' && c[i + 2] == '\b')
         {
             c[i] = 15;
-            c[i+2] = '\0';
+            c[i + 2] = '\0';
         }
     }
 }
 
-int recv_message(int &socket, char recv_buffer[8000], int size)
-{
+/**
+ * @brief receives a message a pushes it to v_messages list
+ * 
+ * @param socket 
+ * @param recv_buffer 
+ * @param size 
+ * @return int 
+ */
+int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
+{    
+    //======================================================================================================================================
+    //  TIMEOUT
+    struct timeval timeout;
+                timeout.tv_sec = 2;
+                timeout.tv_usec = 0;
+                FD_ZERO(&sockets);         // set adress of fd_set sockets to zero
+                FD_SET(socket, &sockets); // add sockets, we want to listen to
+
+
+    //======================================================================================================================================
+    //  INITIALIZATION
     int removed_chars = 0;
     int BytesRead = 0;
+    memset(recv_buffer, '\0', 100);
+
     
+    //======================================================================================================================================
+    //  RECEIVING AND PUSHING MESSAGES TO LIST
     if (v_messages.empty())
     {
-        memset (recv_buffer,'\0',100);
-        cout << "isempty()" << endl;
+                        select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
+                if (select_retval == 0)
+                {
+                    perror("Select error: ");
+                    close(socket);
+                    _exit(EXIT_FAILURE);;
+                }
+                if (!FD_ISSET(socket, &sockets))
+                {
+                    cout << "Connection timeout!" << endl;
+                    close(socket);
+                    _exit(EXIT_FAILURE);;
+                }
+
+                
         int number_bytes = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
-        cout << "recv_buffer is:\t" << strlen(recv_buffer) << endl;
+        if (number_bytes == 0)
+            _exit(EXIT_SUCCESS);
+        else if (number_bytes < 0)
+                _exit(EXIT_SUCCESS);
+
+        //checks weird usernames                
         weird_char_check(recv_buffer, number_bytes);
-        removed_chars = RemoveChars(recv_buffer, '\0', number_bytes); 
+        removed_chars = RemoveChars(recv_buffer, '\0', number_bytes);
+        //
         string new_recv_buffer = recv_buffer;
-        cout << "recv_buffer is:\t" << new_recv_buffer.size() << endl;
         splitToVector(new_recv_buffer);
     }
+    //======================================================================================================================================
+    //  RETREIVING MESSAGES FROM THE LIST
+    string str = v_messages.front();
+    v_messages.pop_front();
 
-        string str = v_messages.front();
-        v_messages.pop_front();
-
-        cout << "STRING = " << str << endl;
-        const char *recv_buffer_const = str.c_str();
-        strcpy(recv_buffer, recv_buffer_const);
-        BytesRead = strlen(recv_buffer);
-
+    const char *recv_buffer_const = str.c_str();
+    strcpy(recv_buffer, recv_buffer_const);
+    BytesRead = strlen(recv_buffer);
 
     removed_chars = RemoveChars(recv_buffer, '\0', BytesRead);
 
@@ -197,20 +293,58 @@ int recv_message(int &socket, char recv_buffer[8000], int size)
 
         send_message(socket, "301 SYNTAX ERROR\a\b");
         close(socket);
-        exit(1);
+        _exit(EXIT_FAILURE);
     }
 
-    while (recv_buffer[BytesRead - 2] != '\a' && recv_buffer[BytesRead - 1] != '\b')
+    //======================================================================================================================================
+    //  FRAGMENTATION RESOLUTION
+
+    if (str.find("\a\b") == std::string::npos)
     {
-        BytesRead += recv(socket, recv_buffer + BytesRead, SIZE_OF_BUFFER - 1, 0);
-        //cout << "RECV_BUFFER:" << recv_buffer << endl;
+        while (str.find("\a\b") == std::string::npos)
+        {
+                //======================================================================================================================================
+                //  TIMEOUT
+             select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
+                if (select_retval == 0)
+                {
+                    perror("Select error: ");
+                    close(socket);
+                    _exit(EXIT_FAILURE);
+                }
+                // FD_ISSET - checks if in data structure sockets - fd_sock is set
+                //  --> testing this because selectv() unsets it after timeout
+                if (!FD_ISSET(socket, &sockets))
+                {
+                    cout << "Connection timeout!" << endl;
+                    close(socket);
+                     _exit(EXIT_FAILURE);
+                }
+            int number_bytes = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
+            if (number_bytes == 0)
+                _exit(EXIT_FAILURE);
+
+            else if (number_bytes < 0)
+                _exit(EXIT_SUCCESS);
+            
+            str += recv_buffer;
+        }
+        // pushing messages and fragments of messages into a list
+        splitToVector(str);
+        str = v_messages.front();
+        v_messages.pop_front();
+        const char *recv_buffer_const = str.c_str();
+        strcpy(recv_buffer, recv_buffer_const);
+        BytesRead = strlen(recv_buffer);
     }
+
+    //adding null byte to the message
     recv_buffer[BytesRead - (2 + removed_chars)] = '\0';
 
     if (BytesRead <= 0)
     {
         close(socket);
-        exit(1);
+        _exit(EXIT_FAILURE);
     }
 
     return BytesRead;
@@ -223,7 +357,7 @@ int recv_message(int &socket, char recv_buffer[8000], int size)
  * @param fd_sock           --> socket
  * @return pair<int,int>    --> coordinates
  */
-pair<int, int> split(char recv_buffer[8000], int &fd_sock)
+pair<int, int> split(char recv_buffer[SIZE_OF_BUFFER], int &fd_sock)
 {
     pair<int, int> pair;
     const char test[20] = "OK";
@@ -256,11 +390,11 @@ pair<int, int> split(char recv_buffer[8000], int &fd_sock)
  *
  * @param client_id         --> index of the key - it should be between 0-4
  * @param key               --> pair of keys, first for server, second for client
- * @param responses         --> struct of responses to send to client
+
  * @param fd_sock           --> socket
  * @return pair<int,int>    --> returns the pair from key vector
  */
-pair<int, int> keyCheck(const int client_id, const vector<pair<int, int>> &key, responses &responses, int &fd_sock)
+pair<int, int> keyCheck(const int client_id, const vector<pair<int, int>> &key, response &responses, int &fd_sock)
 {
     if (client_id < 0 || client_id > 4)
     {
@@ -275,31 +409,34 @@ pair<int, int> keyCheck(const int client_id, const vector<pair<int, int>> &key, 
 }
 //===============================================
 /**
- * @brief authentizates the client -
+ * @brief authentizates the client
  *
  * @param fd_sock   --> provided socket
  * @return true     --> client was authentizated
  * @return false    --> client didnt authentizate
  */
-void authentization(int &fd_sock, client &client, responses &responses)
+void authentization(int &fd_sock)
 {
-    client_sizes sizes;
-    char recv_buffer[8000];
+    char recv_buffer[SIZE_OF_BUFFER];
     // authentizační klíče - slouží k autentizaci klienta
     //  first - server key
     //  second - client key
     vector<pair<int, int>> key = {{23019, 32037}, {32037, 2925}, {18789, 13603}, {16443, 29533}, {18189, 21952}};
 
+    cout << "\n--Robot is authentizating to the server--\n"
+         << endl;
+
     recv_message(fd_sock, recv_buffer, sizes.SIZE_USERNAME);
     client.CLIENT_USERNAME = recv_buffer;
-    cout << "Jmeno:" << client.CLIENT_USERNAME << endl;
+    cout << "CLIENT_NAME:\t" << client.CLIENT_USERNAME << endl;
     if ((int)client.CLIENT_USERNAME.size() > sizes.SIZE_USERNAME)
     {
         close(fd_sock);
         exit(1);
     }
 
-    // sending KEY_REQUEST
+    //======================================================================================================================================
+    //  SENDING KEY REQUEST
     send_message(fd_sock, responses.SERVER_KEY_REQUEST);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_KEY_ID);
     client.CLIENT_KEY_ID = atoi(recv_buffer);
@@ -308,9 +445,9 @@ void authentization(int &fd_sock, client &client, responses &responses)
 
     // checks if key send by client is legit
     pair<int, int> key_pair = keyCheck(client.CLIENT_KEY_ID, key, responses, fd_sock);
-
-    // vypočítáni hashe
-    //========================================
+    
+    //======================================================================================================================================
+    //  CALCULATING SERVER HASH
     const int MAX_NUM = 65536; // highest possible 12-bit int
     int hash = 0;
 
@@ -318,10 +455,6 @@ void authentization(int &fd_sock, client &client, responses &responses)
     {
 
         hash += (int)client.CLIENT_USERNAME[i] % MAX_NUM;
-        cout << "char:" << client.CLIENT_USERNAME[i] << endl;
-        cout << "velikost char:" << (int)client.CLIENT_USERNAME[i] << endl;
-        // debug
-        // cout << (int)client.CLIENT_USERNAME[i] << ":" << client.CLIENT_USERNAME[i] << endl;
     }
     hash = (hash * 1000) % MAX_NUM;
 
@@ -334,19 +467,21 @@ void authentization(int &fd_sock, client &client, responses &responses)
     conf_message += "\a\b";
     const char *confirm_message_char = conf_message.c_str();
 
-    cout << "SERVER HASH:\t" << hash_server_char << endl;
+    cout << "SERVER_HASH:\t" << hash_server_char << endl;
 
     // assign it to server response that I will send to client
     responses.SERVER_CONFIRMATION = confirm_message_char;
-    // int hash_client = (hash * key_pair.second) % MAX_NUM;
 
     send_message(fd_sock, responses.SERVER_CONFIRMATION);
+
+    //======================================================================================================================================
+    //  CHECKING CLIENT HASH
 
     // receiving bash client hash
     recv_message(fd_sock, recv_buffer, sizes.SIZE_CONFIRMATION);
     client.CLIENT_CONFIRMATION = atoi(recv_buffer);
 
-    cout << "CLIENT_CNFRM:\t" << client.CLIENT_CONFIRMATION << endl;
+    cout << "CLIENT_HASH:\t" << client.CLIENT_CONFIRMATION << endl;
 
     int hash_client = (hash + key_pair.second) % MAX_NUM;
 
@@ -356,9 +491,11 @@ void authentization(int &fd_sock, client &client, responses &responses)
 
     else
     {
+        cout << "\n --Server sent a wrong authentization--\n"
+             << endl;
         send_message(fd_sock, responses.SERVER_LOGIN_FAILED);
         close(fd_sock);
-        exit(1);
+        _exit(EXIT_FAILURE);
     }
 }
 //======================================================================================================================================
@@ -375,9 +512,9 @@ void authentization(int &fd_sock, client &client, responses &responses)
  * @param recv_buffer           --> buffer
  * pair<int,int>& second_step   --> pair of coordinates, when we will begin moving the robot - server will be reffering to them
  */
-int direction(int fd_sock, responses responses, char recv_buffer[8000], pair<int, int> &second_step)
+int direction(int fd_sock, char recv_buffer[SIZE_OF_BUFFER], pair<int, int> &second_step)
 {
-    client_sizes sizes;
+
     pair<int, int> first_step;
     send_message(fd_sock, responses.SERVER_MOVE);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -397,14 +534,14 @@ int direction(int fd_sock, responses responses, char recv_buffer[8000], pair<int
         return DOLU;
     else if (first_step.second < second_step.second)
         return NAHORU;
-    // vyskytla se prekazka
-    // todo
+
+    //Vyskytla se prekazka
     else
     {
-        cout << "prekazka na startu" << endl;
+        cout << "--Obstacle on the start--" << endl;
         send_message(fd_sock, responses.SERVER_TURN_LEFT);
         recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
-        return direction(fd_sock, responses, recv_buffer, second_step);
+        return direction(fd_sock, recv_buffer, second_step);
     }
 }
 
@@ -418,10 +555,9 @@ int direction(int fd_sock, responses responses, char recv_buffer[8000], pair<int
  * @param recv_buffer   --> receiving buffer
  * @param smer          --> enum to which he direction is rotated righ now
  */
-void setDirRight(int fd_sock, responses responses, char recv_buffer[8000], int smer)
+void setDirRight(int fd_sock, char recv_buffer[SIZE_OF_BUFFER], int smer)
 {
 
-    client_sizes sizes;
 
     switch (smer)
     {
@@ -446,7 +582,10 @@ void setDirRight(int fd_sock, responses responses, char recv_buffer[8000], int s
     }
 }
 
-pair<int, int> moveLeft(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+//======================================================================================================================================
+//                                      ROBOT MOVE FUNCTIONS
+//======================================================================================================================================
+pair<int, int> moveLeft(int &fd_sock, char recv_buffer[SIZE_OF_BUFFER])
 {
     send_message(fd_sock, responses.SERVER_TURN_RIGHT);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -462,7 +601,7 @@ pair<int, int> moveLeft(int &fd_sock, responses responses, char recv_buffer[8000
 
     return coords;
 }
-pair<int, int> moveRight(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+pair<int, int> moveRight(int &fd_sock,  char recv_buffer[SIZE_OF_BUFFER] )
 {
     send_message(fd_sock, responses.SERVER_MOVE);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -471,7 +610,7 @@ pair<int, int> moveRight(int &fd_sock, responses responses, char recv_buffer[800
     return coords;
 }
 
-pair<int, int> moveUp(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+pair<int, int> moveUp(int &fd_sock, char recv_buffer[SIZE_OF_BUFFER])
 {
     send_message(fd_sock, responses.SERVER_TURN_LEFT);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -483,7 +622,7 @@ pair<int, int> moveUp(int &fd_sock, responses responses, char recv_buffer[8000],
 
     return coords;
 }
-pair<int, int> moveDown(int &fd_sock, responses responses, char recv_buffer[8000], int smer, client_sizes sizes)
+pair<int, int> moveDown(int &fd_sock, char recv_buffer[SIZE_OF_BUFFER])
 {
     send_message(fd_sock, responses.SERVER_TURN_RIGHT);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -495,58 +634,89 @@ pair<int, int> moveDown(int &fd_sock, responses responses, char recv_buffer[8000
 
     return coords;
 }
-void xMovement(int &fd_sock, pair<int, int> &now_coords, responses responses, char recv_buffer[8000], int smer, client_sizes sizes, pair<int, int> &previous_coords)
+
+/**
+ * @brief function robots movement on the x axis, only in a function because the code would have to be copied otherwise, works on algorithm explained later
+ * 
+ * @param fd_sock       --> socket
+ * @param now_coords    --> cordination robot is at right now
+ * @param responses     --> server responses to the client
+ * @param recv_buffer   --> buffer
+ * @param sizes         --> sizes check
+ * @param previous_coords 
+ */
+void xMovement(int &fd_sock, pair<int, int> &now_coords,  char recv_buffer[SIZE_OF_BUFFER], pair<int, int> &previous_coords)
 {
 
     if (now_coords.first > 0)
     {
         previous_coords = now_coords;
-        now_coords = moveLeft(fd_sock, responses, recv_buffer, smer, sizes);
+        now_coords = moveLeft(fd_sock, recv_buffer);
         cout << "move: Left\n("
              << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
     }
     if (now_coords.first < 0)
     {
         previous_coords = now_coords;
-        now_coords = moveRight(fd_sock, responses, recv_buffer, smer, sizes);
+        now_coords = moveRight(fd_sock,  recv_buffer);
         cout << "move: Right\n("
              << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
     }
 }
+/**
+ * @brief navigates robot throught the maze a picks up a secret message
+ * 
+ * @param fd_sock   --> socket
+ */
 
-void searchForSecret(int &fd_sock, client &client, responses &responses)
+void searchForSecret(int &fd_sock)
 {
-    client_sizes sizes;
-    char recv_buffer[8000];
+
+    //======================================================================================================================================
+    //  SEARCHING ALGORTHITHM INITIALIZATION 
+    char recv_buffer[SIZE_OF_BUFFER];
     pair<int, int> previous_coords = {0, 0};
     pair<int, int> now_coords;
     pair<int, int> secret_pair = {0, 0};
 
-    int smer = direction(fd_sock, responses, recv_buffer, now_coords);
+    int smer = direction(fd_sock, recv_buffer, now_coords);
 
     // i want direction to be right so I can work with robot two dimensionaly
-    setDirRight(fd_sock, responses, recv_buffer, smer);
+    setDirRight(fd_sock, recv_buffer, smer);
+    //======================================================================================================================================
 
+    //======================================================================================================================================
+    //  ROBOT MOVING THROUGHT THE MAZE ALGORTHITHM
+    // (0,0) has been reached, now we can pick up the secret message
+
+    /*
+        Searching algorthimth, robot needs to reach x,y = (0,0) coordination, robot will first try to reach y = 0
+        obstacles may appear, if it happens robot will try to move towards x = 0 coordination instead, right after that he will again try to reach y = 0
+        after he reaches y = 0, he will then move in the x direction. If an obstacle appears in x direction he will move one block in y and one block in x,
+        -- we know for a fact that obstacle is always 1x1, otherwise this algorthitm wouldn't always work -- 
+    */
+       cout << "\n--Robot is starting its search for secret message--\n"
+         << endl;
     while (now_coords != secret_pair)
     {
 
         if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
         {
-            moveDown(fd_sock, responses, recv_buffer, smer, sizes);
-            xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+            moveDown(fd_sock,  recv_buffer);
+            xMovement(fd_sock, now_coords, recv_buffer, previous_coords);
         }
 
         if (now_coords.second > 0)
         {
             previous_coords = now_coords;
-            now_coords = moveDown(fd_sock, responses, recv_buffer, smer, sizes);
+            now_coords = moveDown(fd_sock,  recv_buffer);
             cout << "move: Down\n( "
                  << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
 
             if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
             {
-                moveUp(fd_sock, responses, recv_buffer, smer, sizes);
-                xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+                moveUp(fd_sock, recv_buffer);
+                xMovement(fd_sock, now_coords, recv_buffer, previous_coords);
             }
             else if (now_coords != previous_coords)
                 continue;
@@ -555,29 +725,36 @@ void searchForSecret(int &fd_sock, client &client, responses &responses)
         if (now_coords.second < 0)
         {
             previous_coords = now_coords;
-            now_coords = moveUp(fd_sock, responses, recv_buffer, smer, sizes);
+            now_coords = moveUp(fd_sock,  recv_buffer);
             cout << "move: Up\n("
                  << "now_coords:\t" << now_coords.first << "," << now_coords.second << " )" << endl;
 
             if (now_coords == previous_coords && (now_coords.first == 0 || now_coords.second == 0))
             {
-                moveDown(fd_sock, responses, recv_buffer, smer, sizes);
-                xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+                moveDown(fd_sock, recv_buffer);
+                xMovement(fd_sock, now_coords, recv_buffer,   previous_coords);
             }
             if (now_coords != previous_coords)
                 continue;
         }
 
         // if we are done with Y coordination --> Y=0 OR Y path is blocked we move in X axis
-        xMovement(fd_sock, now_coords, responses, recv_buffer, smer, sizes, previous_coords);
+        xMovement(fd_sock, now_coords,  recv_buffer, previous_coords);
     }
 
+    //======================================================================================================================================
+    //  SECRET MESSAGE PICK-UP
+    // (0,0) has been reached, now we can pick up the secret message
+    
+    cout << "\n --Robot has found the secret message--\n" << endl;
+    cout << "The message reads:" << endl;
     send_message(fd_sock, responses.SERVER_PICK_UP);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_MESSAGE);
+    cout << recv_buffer << endl;
     send_message(fd_sock, responses.SERVER_LOGOUT);
     close(fd_sock);
 }
-//======================================================================================================================================
+    //======================================================================================================================================
 int main(int argc, char *argv[])
 {
     if (argc < 2) // error handling: wrong input
@@ -662,7 +839,7 @@ int main(int argc, char *argv[])
 
         if (fd_sock < 0)
         {
-            perror("Accepting error: ");
+            perror("Accept error: ");
             close(sock);
             return ACCEPT_ERROR;
         }
@@ -682,33 +859,33 @@ int main(int argc, char *argv[])
             // OS checks how many references points to listening socket - we only need parent to listen
             close(sock);
 
+            while(1){
+            
+
             // special data type that works with select()
             // communication loop
-            while (1)
-            {
-                responses responses;
-                client client;
-                // timeout implementation to avoid zombie processes
 
-                //==============================================================================
-                // AUTENTIZACE
-                authentization(fd_sock, client, responses);
-                //==============================================================================
+            //==============================================================================
+            // AUTHENTIZATION OF ROBOT
+            authentization(fd_sock);
+            //==============================================================================
 
-                searchForSecret(fd_sock, client, responses);
-                /*
-                    recv() - used to receive messages from a socket
-                            - equivalent to read() -> but has flags
-                            - returns lenght of the message on succesfull completion
-                */
-            }
-            cout << "Zaviram" << endl;
+            //==============================================================================
+            // NAVIGATING ROBOT TO THE SECRET
+            searchForSecret(fd_sock);
+            //==============================================================================
+            }   
+            cout << "\n --Closing connection with the robot--\n"
+                 << endl;
             close(fd_sock);
             return SUCCESS;
+            
         }
+        cout << "--Closing process--" << endl;
         int status = 0;
         waitpid(0, &status, WNOHANG);
         close(fd_sock);
+            
     }
     close(sock);
     return SUCCESS;
