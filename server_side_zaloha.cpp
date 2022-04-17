@@ -25,7 +25,8 @@ using namespace std;
 #include <list>
 #include <string>
 #include <regex>
-
+#include <bsd/stdlib.h>
+#include <limits.h>
 //======================================================================================================================================
 //
 //                                      INITIALIZATION
@@ -178,7 +179,7 @@ int RemoveChars(char *buffer, char c, int buffer_lenght)
  */
 void splitToVector(string s)
 {
-
+    
     std::string delimeter = "\a\b";
     if (s.find("\a\b") == std::string::npos)
     {
@@ -206,7 +207,7 @@ void splitToVector(string s)
  * @param c 
  * @param size 
  */
-void weird_char_check(char c[SIZE_OF_BUFFER], int size)
+void weird_char_check(char c[SIZE_OF_BUFFER], int size, int& sock)
 {
     for (int i = 0; i < (size - 3); i++)
     {
@@ -215,6 +216,13 @@ void weird_char_check(char c[SIZE_OF_BUFFER], int size)
             c[i] = 15;
             c[i + 2] = '\0';
         }
+         if (c[i+1] == ' ' && c[i+2] == '\a' &&  c[i + 3] == '\b')
+         {
+
+                    send_message(sock, "301 SYNTAX ERROR\a\b");
+                    close(sock);
+                    _exit(EXIT_FAILURE);
+         }
     }
 }
 
@@ -229,7 +237,7 @@ void weird_char_check(char c[SIZE_OF_BUFFER], int size)
 int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
 {    
     //======================================================================================================================================
-    //  TIMEOUT
+    //  TIMEOUT INITIALIZATION
     struct timeval timeout;
                 timeout.tv_sec = 2;
                 timeout.tv_usec = 0;
@@ -248,21 +256,23 @@ int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
     //  RECEIVING AND PUSHING MESSAGES TO LIST
     if (v_messages.empty())
     {
+            //======================================================================================================================================
+            //  TIMEOUT
                         select_retval = select(socket + 1, &sockets, NULL, NULL, &timeout);
                 if (select_retval == 0)
                 {
                     perror("Select error: ");
                     close(socket);
-                    _exit(EXIT_FAILURE);;
+                    _exit(EXIT_FAILURE);
                 }
                 if (!FD_ISSET(socket, &sockets))
                 {
                     cout << "Connection timeout!" << endl;
                     close(socket);
-                    _exit(EXIT_FAILURE);;
+                    _exit(EXIT_FAILURE);
                 }
 
-                
+
         int number_bytes = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
         if (number_bytes == 0)
             _exit(EXIT_SUCCESS);
@@ -270,7 +280,7 @@ int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
                 _exit(EXIT_SUCCESS);
 
         //checks weird usernames                
-        weird_char_check(recv_buffer, number_bytes);
+        weird_char_check(recv_buffer, number_bytes, socket);
         removed_chars = RemoveChars(recv_buffer, '\0', number_bytes);
         //
         string new_recv_buffer = recv_buffer;
@@ -287,14 +297,7 @@ int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
 
     removed_chars = RemoveChars(recv_buffer, '\0', BytesRead);
 
-    // size check
-    if ((BytesRead - 2) > size)
-    {
 
-        send_message(socket, "301 SYNTAX ERROR\a\b");
-        close(socket);
-        _exit(EXIT_FAILURE);
-    }
 
     //======================================================================================================================================
     //  FRAGMENTATION RESOLUTION
@@ -320,6 +323,7 @@ int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
                     close(socket);
                      _exit(EXIT_FAILURE);
                 }
+                memset(recv_buffer, '\0', 100);
             int number_bytes = recv(socket, recv_buffer, SIZE_OF_BUFFER - 1, 0);
             if (number_bytes == 0)
                 _exit(EXIT_FAILURE);
@@ -338,8 +342,18 @@ int recv_message(int &socket, char recv_buffer[SIZE_OF_BUFFER], int size)
         BytesRead = strlen(recv_buffer);
     }
 
+
+
     //adding null byte to the message
     recv_buffer[BytesRead - (2 + removed_chars)] = '\0';
+
+    if (BytesRead > size)
+    {
+
+        send_message(socket, "301 SYNTAX ERROR\a\b");
+        close(socket);
+        _exit(EXIT_FAILURE);
+    }
 
     if (BytesRead <= 0)
     {
@@ -439,7 +453,16 @@ void authentization(int &fd_sock)
     //  SENDING KEY REQUEST
     send_message(fd_sock, responses.SERVER_KEY_REQUEST);
     recv_message(fd_sock, recv_buffer, sizes.SIZE_KEY_ID);
-    client.CLIENT_KEY_ID = atoi(recv_buffer);
+    char* err = nullptr;
+    cout << "recv buffer:\t" << recv_buffer << endl;
+    client.CLIENT_KEY_ID = strtol(recv_buffer, &err, 10);
+    if(*err)
+        {
+        cout << "-- Error: Expected a number --" << endl;
+        send_message(fd_sock, "301 SYNTAX ERROR\a\b");
+        close(fd_sock);
+        _exit(EXIT_FAILURE);
+        }
 
     cout << "CLIENT_KEY_ID:\t" << client.CLIENT_KEY_ID << endl;
 
@@ -480,6 +503,8 @@ void authentization(int &fd_sock)
     // receiving bash client hash
     recv_message(fd_sock, recv_buffer, sizes.SIZE_CONFIRMATION);
     client.CLIENT_CONFIRMATION = atoi(recv_buffer);
+    if(client.CLIENT_CONFIRMATION == 0)
+        cout << "sadly not a number" << endl;
 
     cout << "CLIENT_HASH:\t" << client.CLIENT_CONFIRMATION << endl;
 
@@ -537,7 +562,17 @@ int direction(int fd_sock, char recv_buffer[SIZE_OF_BUFFER], pair<int, int> &sec
 
     //Vyskytla se prekazka
     else
-    {
+    {   
+        int v1 = rand() % 2;
+        switch(v1)
+        {
+            case 0: send_message(fd_sock, responses.SERVER_TURN_LEFT);
+                    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+
+            case 1:send_message(fd_sock, responses.SERVER_TURN_RIGHT);
+                    recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
+             
+        } 
         cout << "--Obstacle on the start--" << endl;
         send_message(fd_sock, responses.SERVER_TURN_LEFT);
         recv_message(fd_sock, recv_buffer, sizes.SIZE_OK);
@@ -813,12 +848,14 @@ int main(int argc, char *argv[])
                 -> used to accept incoming connection requests using accept()
                 - second parameter is limit of connected end devices - after limit is reached - it wont open more connections
     */
-    if (listen(sock, 10) < 0)
+   int return_listen = listen(sock, 10);
+    if (return_listen < 0)
     {
         perror("Listen error:");
         close(sock);
         return LISTEN_ERROR;
     }
+    cout << "listen: " << return_listen << endl;
 
     struct sockaddr_in RemoteAddress;
     socklen_t AddrSize;
@@ -836,7 +873,7 @@ int main(int argc, char *argv[])
            -return value of accept is file descriptor of the accepted socket
         */
         int fd_sock = accept(sock, (struct sockaddr *)&RemoteAddress, &AddrSize);
-
+        cout << "fd_sock:" <<fd_sock << endl;
         if (fd_sock < 0)
         {
             perror("Accept error: ");
